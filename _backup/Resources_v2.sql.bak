@@ -1,0 +1,45 @@
+UPDATE Resources
+SET ResourceClassType = 'RESOURCECLASS_STRATEGIC'
+WHERE ResourceClassType IN ('RESOURCECLASS_BONUS', 'RESOURCECLASS_LUXURY');
+
+INSERT OR IGNORE INTO Types (Type, Kind) VALUES 
+('RESOURCE_FOOD', 'KIND_RESOURCE'),
+('RESOURCE_LUXURY_GOODS', 'KIND_RESOURCE');
+
+INSERT OR IGNORE INTO Resources (ResourceType, Name, ResourceClassType, Frequency) VALUES 
+('RESOURCE_FOOD', 'LOC_RESOURCE_FOOD_NAME', 'RESOURCECLASS_STRATEGIC', 0),
+('RESOURCE_LUXURY_GOODS', 'LOC_RESOURCE_LUXURY_GOODS_NAME', 'RESOURCECLASS_STRATEGIC', 0);
+
+INSERT OR REPLACE INTO Resource_Consumption (
+    ResourceType,
+    Accumulate,
+    BaseExtractionRate,
+    ImprovedExtractionRate,
+    StockpileCap
+)
+SELECT 
+    ResourceType,
+    1,
+    0,
+    2,
+    200
+FROM Resources
+WHERE ResourceClassType = 'RESOURCECLASS_STRATEGIC';
+
+UPDATE Resource_Consumption
+SET StockpileCap = 200
+WHERE StockpileCap < 200;
+
+UPDATE Buildings
+SET Entertainment = Entertainment + 4
+WHERE BuildingType = 'BUILDING_PALACE';
+
+UPDATE Buildings
+SET Entertainment = Entertainment + 1
+WHERE BuildingType = 'BUILDING_MONUMENT';
+
+-- Пшеница, рис, бананы, рыба, крабы, скот больше не накапливаются сами (раньше давали 2 еды в ход):
+-- теперь Lua начисляет за них ровно 1 Провизию в ход с каждой улучшенной клетки.
+UPDATE Resource_Consumption
+SET ImprovedExtractionRate = 0
+WHERE ResourceType IN ('RESOURCE_WHEAT', 'RESOURCE_RICE', 'RESOURCE_BANANAS', 'RESOURCE_FISH', 'RESOURCE_CRABS', 'RESOURCE_CATTLE');

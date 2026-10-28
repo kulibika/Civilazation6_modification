@@ -1,0 +1,180 @@
+-- ===========================================================================
+-- Resource Overhaul: квота на здания в окне производства
+-- Здание недоступно (серое, с причиной), если на складе игрока меньше
+-- C(r) = max(1, round(B(r) * (S_world(r) / N) / avg(r))) любого ресурса из его рецепта.
+-- Работает для игрока-человека. ИИ платит доплату до C(r) после постройки
+-- (см. OnBuildingConstructed в FoodConsolidation.lua).
+-- ===========================================================================
+include("ProductionPanel");
+
+-- ===========================================================================
+-- ФОРМУЛА КВОТЫ (одинаковая в игровом скрипте и в интерфейсе)
+--   N      = (число городов цивилизаций на карте) / 2   (города-государства не считаются), не меньше 1
+--   avg(r) = средняя базовая цена ресурса r по всем рецептам (юниты, здания, доп. ресурсы)
+--   C(r)   = max(1, round( B(r) * (S_world(r) / N) / avg(r) ))
+-- Из мирового запаса ресурса одновременно можно создать около N "средних" объектов.
+-- Цена может быть и выше, и ниже базовой: при нехватке ресурса в мире она падает.
+-- ===========================================================================
+local RO_AvgBaseCache = nil;
+
+local function RO_AddBase(acc, resType, base)
+    if resType == nil or base == nil or base <= 0 then return end
+    local r = GameInfo.Resources[resType];
+    if r == nil then return end
+    local e = acc[r.Index] or { sum = 0, n = 0 };
+    e.sum = e.sum + base; e.n = e.n + 1;
+    acc[r.Index] = e;
+end
+
+function RO_GetAvgBase(resIndex)
+    if RO_AvgBaseCache == nil then
+        local acc = {};
+        if GameInfo.Units_XP2 ~= nil then
+            for row in GameInfo.Units_XP2() do
+                if row.ResourceCost ~= nil and row.ResourceCost > 0 then
+                    local u = GameInfo.Units[row.UnitType];
+                    if u ~= nil and u.StrategicResource ~= nil then RO_AddBase(acc, u.StrategicResource, row.ResourceCost); end
+                end
+            end
+        end
+        if GameInfo.Building_ResourceCosts ~= nil then
+            for row in GameInfo.Building_ResourceCosts() do RO_AddBase(acc, row.ResourceType, row.StartProductionCost); end
+        end
+        if GameInfo.RO_UnitExtraCosts ~= nil then
+            for row in GameInfo.RO_UnitExtraCosts() do RO_AddBase(acc, row.ResourceType, row.BaseCost); end
+        end
+        if GameInfo.RO_BuildingExtraCosts ~= nil then
+            for row in GameInfo.RO_BuildingExtraCosts() do RO_AddBase(acc, row.ResourceType, row.BaseCost); end
+        end
+        RO_AvgBaseCache = {};
+        for idx, e in pairs(acc) do RO_AvgBaseCache[idx] = e.sum / e.n; end
+    end
+    return RO_AvgBaseCache[resIndex];
+end
+
+function RO_GetQuotaN()
+    local cities = 0;
+    local ids = {};
+    if PlayerManager.GetAliveMajorIDs ~= nil then
+        ids = PlayerManager.GetAliveMajorIDs();
+    elseif PlayerManager.GetAliveMajors ~= nil then
+        for _, p in ipairs(PlayerManager.GetAliveMajors()) do table.insert(ids, p:GetID()); end
+    end
+    for _, id in ipairs(ids) do
+        local p = Players[id];
+        if p ~= nil then cities = cities + p:GetCities():GetCount(); end
+    end
+    local n = cities / 2;
+    if n < 1 then n = 1 end
+    return n;
+end
+
+function RO_QuotaFormula(base, worldStock, resIndex)
+    local avg = RO_GetAvgBase(resIndex) or base;
+    if avg <= 0 then avg = base end
+    local c = math.floor(base * (worldStock / RO_GetQuotaN()) / avg + 0.5);
+    if c < 1 then c = 1 end
+    return c;
+end
+
+local RO_BASE_GetData = GetData;
+local RO_BASE_BuildBuilding = BuildBuilding;
+local RO_BASE_PurchaseBuilding = PurchaseBuilding;
+
+local function RO_WorldStock(resIndex)
+    local total = 0;
+    -- Только цивилизации: ресурсы городов-государств и вольных городов не учитываются
+    local ids = {};
+    if PlayerManager.GetAliveMajorIDs ~= nil then
+        ids = PlayerManager.GetAliveMajorIDs();
+    elseif PlayerManager.GetAliveMajors ~= nil then
+        for _, p in ipairs(PlayerManager.GetAliveMajors()) do table.insert(ids, p:GetID()); end
+    end
+    for _, i in ipairs(ids) do
+        local pPlayer = Players[i];
+        if pPlayer ~= nil and pPlayer:IsAlive() then
+            local pRes = pPlayer:GetResources();
+            if pRes ~= nil then
+                total = total + pRes:GetResourceAmount(resIndex);
+            end
+        end
+    end
+    return total;
+end
+
+-- Возвращает строку-причину, если игрок не может оплатить здание по квоте, иначе nil
+local function RO_BuildingQuotaShortfall(buildingType)
+    local pPlayer = Players[Game.GetLocalPlayer()];
+    if pPlayer == nil then return nil end
+    local pRes = pPlayer:GetResources();
+    if pRes == nil or GameInfo.Building_ResourceCosts == nil then return nil end
+
+    local lines = {};
+    for row in GameInfo.Building_ResourceCosts() do
+        if row.BuildingType == buildingType and row.StartProductionCost > 0 then
+            local resDef = GameInfo.Resources[row.ResourceType];
+            if resDef ~= nil then
+                local cost = RO_QuotaFormula(row.StartProductionCost, RO_WorldStock(resDef.Index), resDef.Index);
+                local have = pRes:GetResourceAmount(resDef.Index);
+                if have < cost then
+                    table.insert(lines, Locale.Lookup("LOC_RO_QUOTA_NOT_ENOUGH", cost, "[ICON_" .. resDef.ResourceType .. "]", resDef.Name, have));
+                end
+            end
+        end
+    end
+    -- Дополнительные ресурсы рецепта здания (Data/Recipes.sql)
+    if GameInfo.RO_BuildingExtraCosts ~= nil then
+        for row in GameInfo.RO_BuildingExtraCosts() do
+            if row.BuildingType == buildingType and row.BaseCost > 0 then
+                local resDef = GameInfo.Resources[row.ResourceType];
+                if resDef ~= nil then
+                    local cost = RO_QuotaFormula(row.BaseCost, RO_WorldStock(resDef.Index), resDef.Index);
+                    local have = pRes:GetResourceAmount(resDef.Index);
+                    if have < cost then
+                        table.insert(lines, Locale.Lookup("LOC_RO_QUOTA_NOT_ENOUGH", cost, "[ICON_" .. resDef.ResourceType .. "]", resDef.Name, have));
+                    end
+                end
+            end
+        end
+    end
+    if #lines == 0 then return nil end
+    return table.concat(lines, "[NEWLINE]");
+end
+
+local function RO_ApplyToList(list)
+    if list == nil then return end
+    for _, item in ipairs(list) do
+        if item.Type ~= nil and not item.Repair then
+            local reason = RO_BuildingQuotaShortfall(item.Type);
+            if reason ~= nil then
+                item.Disabled = true;
+                item.ToolTip = (item.ToolTip or "") .. "[NEWLINE][NEWLINE][COLOR:Red]" .. reason .. "[ENDCOLOR]";
+            end
+        end
+    end
+end
+
+function GetData()
+    local data = RO_BASE_GetData();
+    if data ~= nil then
+        RO_ApplyToList(data.BuildingItems);
+        RO_ApplyToList(data.BuildingPurchases);
+    end
+    return data;
+end
+
+function BuildBuilding(city, buildingEntry)
+    if buildingEntry ~= nil and not buildingEntry.Repair and RO_BuildingQuotaShortfall(buildingEntry.Type) ~= nil then
+        UI.PlaySound("Play_UI_Click_Error");
+        return;
+    end
+    return RO_BASE_BuildBuilding(city, buildingEntry);
+end
+
+function PurchaseBuilding(city, buildingEntry)
+    if buildingEntry ~= nil and RO_BuildingQuotaShortfall(buildingEntry.Type) ~= nil then
+        UI.PlaySound("Play_UI_Click_Error");
+        return;
+    end
+    return RO_BASE_PurchaseBuilding(city, buildingEntry);
+end

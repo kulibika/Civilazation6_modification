@@ -1,0 +1,105 @@
+-- ===========================================================================
+-- Resource Overhaul: квота на здания в окне производства
+-- Здание недоступно (серое, с причиной), если на складе игрока меньше
+-- C(r) = max(B(r), round(S_world(r) / 6)) любого ресурса из его рецепта.
+-- Работает для игрока-человека. ИИ платит доплату до C(r) после постройки
+-- (см. OnBuildingConstructed в FoodConsolidation.lua).
+-- ===========================================================================
+include("ProductionPanel");
+
+local RO_QUOTA_DIVISOR = 6;
+
+local RO_BASE_GetData = GetData;
+local RO_BASE_BuildBuilding = BuildBuilding;
+local RO_BASE_PurchaseBuilding = PurchaseBuilding;
+
+local function RO_WorldStock(resIndex)
+    local total = 0;
+    for i = 0, 62 do
+        local p = Players[i];
+        if p ~= nil and p:IsAlive() then
+            local r = p:GetResources();
+            if r ~= nil then total = total + r:GetResourceAmount(resIndex); end
+        end
+    end
+    return total;
+end
+
+-- Возвращает строку-причину, если игрок не может оплатить здание по квоте, иначе nil
+local function RO_BuildingQuotaShortfall(buildingType)
+    local pPlayer = Players[Game.GetLocalPlayer()];
+    if pPlayer == nil then return nil end
+    local pRes = pPlayer:GetResources();
+    if pRes == nil or GameInfo.Building_ResourceCosts == nil then return nil end
+
+    local lines = {};
+    for row in GameInfo.Building_ResourceCosts() do
+        if row.BuildingType == buildingType and row.StartProductionCost > 0 then
+            local resDef = GameInfo.Resources[row.ResourceType];
+            if resDef ~= nil then
+                local cost = math.floor(RO_WorldStock(resDef.Index) / RO_QUOTA_DIVISOR + 0.5);
+                if cost < row.StartProductionCost then cost = row.StartProductionCost; end
+                local have = pRes:GetResourceAmount(resDef.Index);
+                if have < cost then
+                    table.insert(lines, Locale.Lookup("LOC_RO_QUOTA_NOT_ENOUGH", cost, "[ICON_" .. resDef.ResourceType .. "]", resDef.Name, have));
+                end
+            end
+        end
+    end
+    -- Дополнительные ресурсы рецепта здания (Data/Recipes.sql)
+    if GameInfo.RO_BuildingExtraCosts ~= nil then
+        for row in GameInfo.RO_BuildingExtraCosts() do
+            if row.BuildingType == buildingType and row.BaseCost > 0 then
+                local resDef = GameInfo.Resources[row.ResourceType];
+                if resDef ~= nil then
+                    local cost = math.floor(RO_WorldStock(resDef.Index) / RO_QUOTA_DIVISOR + 0.5);
+                    if cost < row.BaseCost then cost = row.BaseCost; end
+                    local have = pRes:GetResourceAmount(resDef.Index);
+                    if have < cost then
+                        table.insert(lines, Locale.Lookup("LOC_RO_QUOTA_NOT_ENOUGH", cost, "[ICON_" .. resDef.ResourceType .. "]", resDef.Name, have));
+                    end
+                end
+            end
+        end
+    end
+    if #lines == 0 then return nil end
+    return table.concat(lines, "[NEWLINE]");
+end
+
+local function RO_ApplyToList(list)
+    if list == nil then return end
+    for _, item in ipairs(list) do
+        if item.Type ~= nil and not item.Repair then
+            local reason = RO_BuildingQuotaShortfall(item.Type);
+            if reason ~= nil then
+                item.Disabled = true;
+                item.ToolTip = (item.ToolTip or "") .. "[NEWLINE][NEWLINE][COLOR:Red]" .. reason .. "[ENDCOLOR]";
+            end
+        end
+    end
+end
+
+function GetData()
+    local data = RO_BASE_GetData();
+    if data ~= nil then
+        RO_ApplyToList(data.BuildingItems);
+        RO_ApplyToList(data.BuildingPurchases);
+    end
+    return data;
+end
+
+function BuildBuilding(city, buildingEntry)
+    if buildingEntry ~= nil and not buildingEntry.Repair and RO_BuildingQuotaShortfall(buildingEntry.Type) ~= nil then
+        UI.PlaySound("Play_UI_Click_Error");
+        return;
+    end
+    return RO_BASE_BuildBuilding(city, buildingEntry);
+end
+
+function PurchaseBuilding(city, buildingEntry)
+    if buildingEntry ~= nil and RO_BuildingQuotaShortfall(buildingEntry.Type) ~= nil then
+        UI.PlaySound("Play_UI_Click_Error");
+        return;
+    end
+    return RO_BASE_PurchaseBuilding(city, buildingEntry);
+end

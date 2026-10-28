@@ -1,0 +1,383 @@
+function ConsolidateCategory(pPlayerResources, targetResName, sourceResNames)
+    local targetRes = GameInfo.Resources[targetResName];
+    if targetRes == nil then return end
+    
+    local totalGained = 0;
+    for _, resName in ipairs(sourceResNames) do
+        local res = GameInfo.Resources[resName];
+        if res ~= nil then
+            local count = pPlayerResources:GetResourceAmount(res.Index);
+            if count > 0 then
+                totalGained = totalGained + count;
+                pPlayerResources:ChangeResourceAmount(res.Index, -count);
+            end
+        end
+    end
+    
+    if totalGained > 0 then
+        pPlayerResources:ChangeResourceAmount(targetRes.Index, totalGained);
+    end
+end
+
+function AddPlainFarmsFood(playerId, pPlayer, pPlayerResources)
+    local farmDef = GameInfo.Improvements["IMPROVEMENT_FARM"];
+    local foodDef = GameInfo.Resources["RESOURCE_FOOD"];
+    if farmDef == nil or foodDef == nil then return end
+
+    local farmCount = 0;
+    local plotCount = Map.GetPlotCount();
+    for i = 0, plotCount - 1 do
+        local plot = Map.GetPlotByIndex(i);
+        if plot ~= nil and plot:GetOwner() == playerId then
+            if plot:GetImprovementType() == farmDef.Index and not plot:IsImprovementPillaged() and plot:GetResourceType() == -1 then
+                farmCount = farmCount + 1;
+            end
+        end
+    end
+
+    if farmCount > 0 then
+        local carry = pPlayer:GetProperty("MOD_FARM_FOOD_CARRY") or 0;
+        local total = carry + (farmCount * 0.5);
+        local whole = math.floor(total);
+        pPlayer:SetProperty("MOD_FARM_FOOD_CARRY", total - whole);
+        if whole > 0 then
+            pPlayerResources:ChangeResourceAmount(foodDef.Index, whole);
+        end
+    end
+end
+
+function GrantStartingFood(pPlayer, pPlayerResources)
+    if pPlayer:GetProperty("MOD_STARTING_FOOD_GIVEN") == 1 then return end
+    local foodDef = GameInfo.Resources["RESOURCE_FOOD"];
+    if foodDef ~= nil then
+        pPlayerResources:ChangeResourceAmount(foodDef.Index, 1);
+        pPlayer:SetProperty("MOD_STARTING_FOOD_GIVEN", 1);
+    end
+end
+
+function OnPlayerTurn(playerId)
+    local pPlayer = Players[playerId];
+    if pPlayer == nil or not pPlayer:IsAlive() then return end
+    local pPlayerResources = pPlayer:GetResources();
+    if pPlayerResources == nil then return end
+
+    GrantStartingFood(pPlayer, pPlayerResources);
+
+    local foodTypes = {
+        "RESOURCE_WHEAT",
+        "RESOURCE_RICE",
+        "RESOURCE_MAIZE",
+        "RESOURCE_FISH",
+        "RESOURCE_CRABS",
+        "RESOURCE_CATTLE",
+        "RESOURCE_SHEEP",
+        "RESOURCE_DEER",
+        "RESOURCE_BANANAS"
+    };
+
+    local luxuryTypes = {
+        "RESOURCE_SPICES",
+        "RESOURCE_IVORY",
+        "RESOURCE_FURS",
+        "RESOURCE_TEA",
+        "RESOURCE_SILK",
+        "RESOURCE_COCOA",
+        "RESOURCE_TOBACCO",
+        "RESOURCE_COFFEE",
+        "RESOURCE_INCENSE",
+        "RESOURCE_SUGAR",
+        "RESOURCE_COTTON",
+        "RESOURCE_CITRUS",
+        "RESOURCE_WINE",
+        "RESOURCE_TRUFFLES",
+        "RESOURCE_DYES",
+        "RESOURCE_WHALES",
+        "RESOURCE_PEARLS",
+        "RESOURCE_OLIVES"
+    };
+
+    local mineralTypes = {
+        "RESOURCE_COPPER",
+        "RESOURCE_JADE",
+        "RESOURCE_MARBLE",
+        "RESOURCE_GYPSUM",
+        "RESOURCE_SALT"
+    };
+
+    ConsolidateCategory(pPlayerResources, "RESOURCE_FOOD", foodTypes);
+    ConsolidateCategory(pPlayerResources, "RESOURCE_LUXURY_GOODS", luxuryTypes);
+    ConsolidateCategory(pPlayerResources, "RESOURCE_STONE", mineralTypes);
+    AddPlainFarmsFood(playerId, pPlayer, pPlayerResources);
+    ProcessSupplyContracts(playerId);
+end
+
+local UNIT_MANDATORY_FOOD_COSTS = {
+    ["UNIT_SLINGER"] = 10,
+    ["UNIT_ARCHER"] = 10,
+    ["UNIT_SPEARMAN"] = 10,
+    ["UNIT_HEAVY_CHARIOT"] = 10,
+    ["UNIT_HORSEMAN"] = 10,
+    ["UNIT_SWORDSMAN"] = 10,
+    ["UNIT_CATAPULT"] = 10,
+    ["UNIT_GALLEY"] = 10,
+    ["UNIT_QUADRIREME"] = 10,
+
+    ["UNIT_CROSSBOWMAN"] = 15,
+    ["UNIT_PIKEMAN"] = 15,
+    ["UNIT_MAN_AT_ARMS"] = 15,
+    ["UNIT_KNIGHT"] = 15,
+    ["UNIT_COURSER"] = 15,
+    ["UNIT_TREBUCHET"] = 15,
+    ["UNIT_PIKE_AND_SHOT"] = 15,
+    ["UNIT_MUSKETMAN"] = 15,
+    ["UNIT_CUIRASSIER"] = 15,
+    ["UNIT_BOMBARD"] = 15,
+    ["UNIT_CARAVEL"] = 15,
+    ["UNIT_FRIGATE"] = 15,
+
+    ["UNIT_LINE_INFANTRY"] = 20,
+    ["UNIT_FIELD_CANNON"] = 20,
+    ["UNIT_CAVALRY"] = 20,
+    ["UNIT_IRONCLAD"] = 20,
+    ["UNIT_INFANTRY"] = 20,
+    ["UNIT_MACHINE_GUN"] = 20,
+    ["UNIT_AT_CREW"] = 20,
+    ["UNIT_ARTILLERY"] = 20,
+    ["UNIT_TANK"] = 20,
+    ["UNIT_BATTLESHIP"] = 20,
+    ["UNIT_SUBMARINE"] = 20,
+    ["UNIT_MODERN_AT"] = 20,
+    ["UNIT_FIGHTER"] = 20,
+    ["UNIT_BOMBER"] = 20,
+    ["UNIT_JET_FIGHTER"] = 20,
+    ["UNIT_JET_BOMBER"] = 20,
+    ["UNIT_MODERN_ARMOR"] = 20,
+    ["UNIT_NUCLEAR_SUBMARINE"] = 20,
+    ["UNIT_MISSILE_CRUISER"] = 20
+};
+
+function GetGlobalResourceStock(resIndex)
+    local total = 0;
+    for i = 0, 61 do
+        local pPlayer = Players[i];
+        if pPlayer ~= nil and pPlayer:IsAlive() then
+            local pRes = pPlayer:GetResources();
+            if pRes ~= nil then
+                total = total + pRes:GetResourceAmount(resIndex);
+            end
+        end
+    end
+    return total;
+end
+
+function GetEnginePaidCost(baseCost)
+    if GameConfiguration ~= nil and GameConfiguration.GetGameSpeedType ~= nil then
+        local speedHash = GameConfiguration.GetGameSpeedType();
+        for row in GameInfo.GameSpeeds() do
+            if row.Hash == speedHash and row.CostMultiplier ~= nil then
+                return math.floor((baseCost * row.CostMultiplier) / 100.0);
+            end
+        end
+    end
+    return baseCost;
+end
+
+function GetQuotaMaterialCost(baseCost, resIndex, prePaid)
+    local totalStock = GetGlobalResourceStock(resIndex) + (prePaid or 0);
+    local quotaCost = math.floor((totalStock / 3.0) + 0.5);
+    if quotaCost < baseCost then
+        return baseCost;
+    end
+    return quotaCost;
+end
+
+function OnUnitAdded(playerID, unitID)
+    local pPlayer = Players[playerID];
+    if pPlayer == nil or not pPlayer:IsAlive() then return end
+    local pUnit = UnitManager.GetUnit(playerID, unitID);
+    if pUnit == nil then return end
+    local pPlayerResources = pPlayer:GetResources();
+    if pPlayerResources == nil then return end
+
+    GrantStartingFood(pPlayer, pPlayerResources);
+
+    local uInfo = GameInfo.Units[pUnit:GetType()];
+    if uInfo == nil then return end
+    local unitTypeStr = uInfo.UnitType;
+
+    local basePrimary = 0;
+    for row in GameInfo.Units_XP2() do
+        if row.UnitType == unitTypeStr and row.ResourceCost > 0 then
+            basePrimary = row.ResourceCost;
+            break;
+        end
+    end
+    local enginePaid = GetEnginePaidCost(basePrimary);
+
+    if unitTypeStr == "UNIT_SETTLER" then
+        local prevCount = pPlayer:GetProperty("MOD_SETTLER_COUNT");
+        if prevCount == nil then
+            prevCount = pPlayer:GetCities():GetCount();
+        end
+        local settlerCount = prevCount + 1;
+        pPlayer:SetProperty("MOD_SETTLER_COUNT", settlerCount);
+        local foodRes = GameInfo.Resources["RESOURCE_FOOD"];
+        if settlerCount >= 2 then
+            for _, pCity in pPlayer:GetCities():Members() do
+                local cityPlot = Map.GetPlot(pCity:GetX(), pCity:GetY());
+                if cityPlot ~= nil then
+                    cityPlot:SetProperty("MOD_FREE_SETTLER_USED", 1);
+                end
+            end
+        end
+        if settlerCount > 2 and foodRes ~= nil then
+            local finalSettlerCost = GetQuotaMaterialCost(30, foodRes.Index, enginePaid);
+            local deltaSettler = finalSettlerCost - enginePaid;
+            if deltaSettler > 0 then
+                pPlayerResources:ChangeResourceAmount(foodRes.Index, -deltaSettler);
+            end
+        end
+        return;
+    end
+
+    if uInfo.StrategicResource ~= nil then
+        local primaryRes = GameInfo.Resources[uInfo.StrategicResource];
+        if primaryRes ~= nil and basePrimary > 0 then
+            local finalPrimary = GetQuotaMaterialCost(basePrimary, primaryRes.Index, enginePaid);
+            local deltaPrimary = finalPrimary - enginePaid;
+            if deltaPrimary > 0 then
+                pPlayerResources:ChangeResourceAmount(primaryRes.Index, -deltaPrimary);
+            end
+        end
+    end
+
+    local foodBase = UNIT_MANDATORY_FOOD_COSTS[unitTypeStr];
+    if foodBase ~= nil and foodBase > 0 then
+        local foodResource = GameInfo.Resources["RESOURCE_FOOD"];
+        if foodResource ~= nil then
+            local finalFood = GetQuotaMaterialCost(foodBase, foodResource.Index, 0);
+            pPlayerResources:ChangeResourceAmount(foodResource.Index, -finalFood);
+        end
+    end
+end
+
+local DISTRICT_RESOURCE_COSTS = {
+    ["DISTRICT_CAMPUS"] = { res = "RESOURCE_STONE", cost = 15 },
+    ["DISTRICT_HOLY_SITE"] = { res = "RESOURCE_STONE", cost = 15 },
+    ["DISTRICT_HARBOR"] = { res = "RESOURCE_STONE", cost = 15 },
+    ["DISTRICT_AQUEDUCT"] = { res = "RESOURCE_STONE", cost = 15 },
+    ["DISTRICT_DAM"] = { res = "RESOURCE_STONE", cost = 20 },
+    ["DISTRICT_CANAL"] = { res = "RESOURCE_STONE", cost = 20 },
+    ["DISTRICT_NEIGHBORHOOD"] = { res = "RESOURCE_STONE", cost = 15 },
+    ["DISTRICT_COMMERCIAL_HUB"] = { res = "RESOURCE_STONE", cost = 15 },
+    ["DISTRICT_ENCAMPMENT"] = { res = "RESOURCE_IRON", cost = 15 },
+    ["DISTRICT_INDUSTRIAL_ZONE"] = { res = "RESOURCE_IRON", cost = 20 },
+    ["DISTRICT_THEATER"] = { res = "RESOURCE_LUXURY_GOODS", cost = 15 },
+    ["DISTRICT_ENTERTAINMENT_COMPLEX"] = { res = "RESOURCE_LUXURY_GOODS", cost = 15 },
+    ["DISTRICT_WATER_ENTERTAINMENT_COMPLEX"] = { res = "RESOURCE_LUXURY_GOODS", cost = 20 },
+    ["DISTRICT_DIPLOMATIC_QUARTER"] = { res = "RESOURCE_LUXURY_GOODS", cost = 15 },
+    ["DISTRICT_PRESERVE"] = { res = "RESOURCE_LUXURY_GOODS", cost = 15 },
+    ["DISTRICT_AERODROME"] = { res = "RESOURCE_ALUMINUM", cost = 20 }
+};
+
+function OnDistrictProgress(owner, districtID, cityID, x, y, districtType, era, civilization, percentComplete, appeal, isPillaged)
+    if percentComplete < 100 or isPillaged then return end
+    local plot = Map.GetPlot(x, y);
+    if plot == nil or plot:GetProperty("MOD_DISTRICT_PAID") == 1 then return end
+    plot:SetProperty("MOD_DISTRICT_PAID", 1);
+
+    local pPlayer = Players[owner];
+    if pPlayer == nil or not pPlayer:IsAlive() then return end
+    local dInfo = GameInfo.Districts[districtType];
+    if dInfo == nil then return end
+
+    local costData = DISTRICT_RESOURCE_COSTS[dInfo.DistrictType];
+    if costData == nil then
+        for row in GameInfo.DistrictReplaces() do
+            if row.CivUniqueDistrictType == dInfo.DistrictType then
+                costData = DISTRICT_RESOURCE_COSTS[row.ReplacesDistrictType];
+                break;
+            end
+        end
+    end
+
+    if costData ~= nil then
+        local pResources = pPlayer:GetResources();
+        local resDef = GameInfo.Resources[costData.res];
+        if pResources ~= nil and resDef ~= nil then
+            pResources:ChangeResourceAmount(resDef.Index, -costData.cost);
+        end
+    end
+end
+
+function OnBuildingConstructed(playerID, cityID, buildingID, plotID, isOriginal)
+    if not isOriginal then return end
+    local pPlayer = Players[playerID];
+    if pPlayer == nil or not pPlayer:IsAlive() then return end
+    local bInfo = GameInfo.Buildings[buildingID];
+    if bInfo == nil then return end
+
+    local pResources = pPlayer:GetResources();
+    if pResources == nil then return end
+
+    for row in GameInfo.Building_ResourceCosts() do
+        if row.BuildingType == bInfo.BuildingType and row.StartProductionCost > 0 then
+            local resDef = GameInfo.Resources[row.ResourceType];
+            if resDef ~= nil then
+                local finalCost = GetQuotaMaterialCost(row.StartProductionCost, resDef.Index, row.StartProductionCost);
+                local delta = finalCost - row.StartProductionCost;
+                if delta > 0 then
+                    pResources:ChangeResourceAmount(resDef.Index, -delta);
+                end
+            end
+        end
+    end
+end
+
+function AddSupplyContract(playerID, params)
+    if params == nil then return end
+    local contracts = Game:GetProperty("MOD_SUPPLY_CONTRACTS") or {};
+    table.insert(contracts, {
+        fromID = params.fromID,
+        toID = params.toID,
+        resType = params.resType,
+        amount = params.amount,
+        turnsLeft = params.turns
+    });
+    Game:SetProperty("MOD_SUPPLY_CONTRACTS", contracts);
+end
+
+function ProcessSupplyContracts(playerID)
+    local contracts = Game:GetProperty("MOD_SUPPLY_CONTRACTS");
+    if contracts == nil or #contracts == 0 then return end
+
+    local updated = {};
+    for _, c in ipairs(contracts) do
+        if c.fromID == playerID and c.turnsLeft > 0 then
+            local pFrom = Players[c.fromID];
+            local pTo = Players[c.toID];
+            local resDef = GameInfo.Resources[c.resType];
+            if pFrom and pTo and pFrom:IsAlive() and pTo:IsAlive() and resDef then
+                local rFrom = pFrom:GetResources();
+                local rTo = pTo:GetResources();
+                local avail = rFrom:GetResourceAmount(resDef.Index);
+                local transfer = math.min(avail, c.amount);
+                if transfer > 0 then
+                    rFrom:ChangeResourceAmount(resDef.Index, -transfer);
+                    rTo:ChangeResourceAmount(resDef.Index, transfer);
+                end
+            end
+            c.turnsLeft = c.turnsLeft - 1;
+        end
+        if c.turnsLeft > 0 then
+            table.insert(updated, c);
+        end
+    end
+    Game:SetProperty("MOD_SUPPLY_CONTRACTS", updated);
+end
+
+Events.PlayerTurnActivated.Add(OnPlayerTurn);
+Events.UnitAddedToMap.Add(OnUnitAdded);
+Events.DistrictBuildProgressChanged.Add(OnDistrictProgress);
+GameEvents.BuildingConstructed.Add(OnBuildingConstructed);
+GameEvents.AddSupplyContract.Add(AddSupplyContract);

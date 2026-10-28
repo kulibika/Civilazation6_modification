@@ -1,0 +1,272 @@
+-- ===========================================================================
+-- Resource Overhaul: поставки ресурсов по ходам в окне сделки (как "Золото за ход")
+--
+-- Файл подключается автоматически: окно сделки Gathering Storm в конце делает
+-- include("DiplomacyDealView_", true). Порядок подключения не гарантирован,
+-- поэтому замену OnClickAvailableResource переустанавливаем при каждой отрисовке.
+--
+-- Как работает:
+--   * Клик по ресурсу — разовая передача со склада (как было).
+--   * Кнопка "Поставка за ход" в блоке ресурсов включает режим поставки для этой стороны:
+--     клик по ресурсу добавляет поставку "N в ход на T ходов" (по умолчанию 1 на 30 ходов).
+--   * Клик по поставке в предложении — окно "Сколько?": количество в ход (стрелки)
+--     и число ходов (кнопки +1 / −1 / +5 / −5).
+-- Сами поставки выполняет движок игры (как поставки золота и роскоши).
+-- ===========================================================================
+
+local RO_SUPPLY_DEFAULT_TURNS = 30;
+local RO_SUPPLY_MIN_TURNS = 1;
+local RO_SUPPLY_MAX_TURNS = 100;
+
+local RO_PerTurnMode = {};        -- [playerID] = true, если включён режим поставки
+local RO_PendingTurns = {};       -- [dealItemID] = выбранное в окне число ходов
+local RO_TurnIM = nil;            -- кнопки выбора ходов в окне "Сколько?"
+
+local function Log(msg) print("[RO Supply] " .. tostring(msg)); end
+
+local function GetTurnIM()
+    if RO_TurnIM == nil then
+        RO_TurnIM = InstanceManager:new("AgreementOptionInstance", "AgreementOptionButton", Controls.ValueEditStack);
+    end
+    return RO_TurnIM;
+end
+
+local function GetWorkingDeal()
+    return DealManager.GetWorkingDeal(DealDirection.OUTGOING, g_LocalPlayer:GetID(), g_OtherPlayer:GetID());
+end
+
+-- ---------------------------------------------------------------------------
+-- Клик по ресурсу: в режиме поставки добавляем ресурс с длительностью
+-- ---------------------------------------------------------------------------
+local RO_BaseOnClickAvailableResource = nil;
+
+function RO_OnClickAvailableResource(player, resourceType)
+    if player == nil or not RO_PerTurnMode[player:GetID()] then
+        if RO_BaseOnClickAvailableResource ~= nil then
+            return RO_BaseOnClickAvailableResource(player, resourceType);
+        end
+        return;
+    end
+
+    if ((ms_bIsDemand == true or ms_bIsGift == true) and ms_InitiatedByPlayerID == ms_OtherPlayerID) then
+        return;
+    end
+
+    local pDeal = GetWorkingDeal();
+    if pDeal == nil then return end
+
+    -- Уже есть поставка этого ресурса? Тогда +1 в ход
+    local dealItems = pDeal:FindItemsByType(DealItemTypes.RESOURCES, DealItemSubTypes.NONE, player:GetID());
+    if dealItems ~= nil then
+        for _, pItem in ipairs(dealItems) do
+            if pItem:GetValueType() == resourceType and pItem:GetDuration() ~= 0 then
+                local newAmount = clip(pItem:GetAmount() + 1, nil, pItem:GetMaxAmount());
+                if newAmount ~= pItem:GetAmount() then
+                    pItem:SetAmount(newAmount);
+                    if not pItem:IsValid() then
+                        pItem:SetAmount(newAmount - 1);
+                        return;
+                    end
+                    UI.PlaySound("UI_GreatWorks_Put_Down");
+                    UpdateDealPanel(player);
+                    UpdateProposedWorkingDeal();
+                end
+                return;
+            end
+        end
+    end
+
+    local pItem = pDeal:AddItemOfType(DealItemTypes.RESOURCES, player:GetID());
+    if pItem ~= nil then
+        pItem:SetValueType(resourceType);
+        pItem:SetAmount(1);
+        pItem:SetDuration(RO_SUPPLY_DEFAULT_TURNS);
+        if not pItem:IsValid() then
+            Log("Движок отклонил поставку ресурса " .. tostring(resourceType) .. " на " .. RO_SUPPLY_DEFAULT_TURNS .. " ходов");
+            pDeal:RemoveItemByID(pItem:GetID());
+            UI.PlaySound("Play_UI_Click_Error");
+            return;
+        end
+        Log("Добавлена поставка ресурса " .. tostring(resourceType) .. ": 1 в ход, " .. pItem:GetDuration() .. " ходов");
+        UI.PlaySound("UI_GreatWorks_Put_Down");
+        UpdateDealPanel(player);
+        UpdateProposedWorkingDeal();
+    end
+end
+
+local function RO_InstallClickOverride()
+    if OnClickAvailableResource ~= RO_OnClickAvailableResource then
+        RO_BaseOnClickAvailableResource = OnClickAvailableResource;
+        OnClickAvailableResource = RO_OnClickAvailableResource;
+    end
+end
+RO_InstallClickOverride();
+
+-- ---------------------------------------------------------------------------
+-- Кнопка "Поставка за ход" в блоке стратегических ресурсов
+-- ---------------------------------------------------------------------------
+local RO_BasePopulateAvailableStrategicResources = PopulateAvailableStrategicResources;
+
+local function SupplyButtonText(playerID)
+    if RO_PerTurnMode[playerID] then
+        return Locale.Lookup("LOC_RO_SUPPLY_MODE_ON");
+    end
+    return Locale.Lookup("LOC_RO_SUPPLY_MODE_OFF");
+end
+
+function PopulateAvailableStrategicResources(player, iconList)
+    RO_InstallClickOverride();
+    local count = RO_BasePopulateAvailableStrategicResources(player, iconList);
+
+    if count ~= nil and count > 0 and not ms_bIsDemand then
+        local playerID = player:GetID();
+        local uiIcon = g_IconAndTextIM:GetInstance(iconList.ListStack);
+        SetIconToSize(uiIcon.Icon, "ICON_RESOURCE_FOOD");
+        uiIcon.IconText:SetText(SupplyButtonText(playerID));
+        uiIcon.SelectButton:SetToolTipString(Locale.Lookup("LOC_RO_SUPPLY_MODE_TT"));
+        uiIcon.SelectButton:RegisterCallback(Mouse.eLClick, function()
+            RO_PerTurnMode[playerID] = not RO_PerTurnMode[playerID];
+            uiIcon.IconText:SetText(SupplyButtonText(playerID));
+            UI.PlaySound("Play_UI_Click");
+        end);
+        if uiIcon.ValueText ~= nil then uiIcon.ValueText:SetHide(true); end
+        uiIcon.RemoveButton:SetHide(true);
+        uiIcon.StopAskingButton:SetHide(true);
+        uiIcon.Icon:SetColor(1, 1, 1);
+        iconList.ListStack:CalculateSize();
+        iconList.GetTopControl():SetHide(false);
+        count = count + 1;
+    end
+    return count;
+end
+
+-- ---------------------------------------------------------------------------
+-- Подписи поставок в предложении: "5 в ход, 20 ходов"
+-- ---------------------------------------------------------------------------
+local RO_BasePopulateDealResources = PopulateDealResources;
+
+function PopulateDealResources(player, iconList)
+    RO_InstallClickOverride();
+    RO_BasePopulateDealResources(player, iconList);
+
+    local pDeal = GetWorkingDeal();
+    if pDeal == nil or iconList == nil or iconList.For30TurnsDealsStack == nil then return end
+
+    -- Порядок иконок в колонке "по ходам" совпадает с порядком предметов сделки
+    local multi = {};
+    for pItem in pDeal:Items() do
+        if pItem:GetFromPlayerID() == player:GetID() and pItem:GetDuration() ~= 0 then
+            local t = pItem:GetType();
+            if t == DealItemTypes.GOLD or t == DealItemTypes.RESOURCES then
+                table.insert(multi, pItem);
+            end
+        end
+    end
+    local children = iconList.For30TurnsDealsStack:GetChildren();
+    for i, pItem in ipairs(multi) do
+        local ctrl = children[i];
+        if ctrl ~= nil and pItem:GetType() == DealItemTypes.RESOURCES then
+            local res = GameInfo.Resources[pItem:GetValueType()];
+            local name = res ~= nil and Locale.Lookup(res.Name) or "";
+            ctrl:SetToolTipString(Locale.Lookup("LOC_RO_SUPPLY_ITEM_TT", name, pItem:GetAmount(), pItem:GetDuration()));
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- Окно "Сколько?": для поставки ресурса добавляем выбор числа ходов
+-- ---------------------------------------------------------------------------
+local RO_BaseReAttachValueEdit = ReAttachValueEdit;
+
+local function RefreshTurnsText(turns)
+    Controls.ValueEditValueText:SetText(Locale.Lookup("LOC_DIPLOMACY_DEAL_FOR_TURNS", turns));
+    Controls.ValueEditValueText:SetHide(false);
+end
+
+function ReAttachValueEdit()
+    GetTurnIM():ResetInstances();
+    RO_BaseReAttachValueEdit();
+
+    local pDeal = GetWorkingDeal();
+    if pDeal == nil then return end
+    local pItem = pDeal:FindItemByID(g_ValueEditDealItemID);
+    if pItem == nil or pItem:GetType() ~= DealItemTypes.RESOURCES or pItem:GetDuration() == 0 then return end
+
+    local itemID = pItem:GetID();
+    RO_PendingTurns[itemID] = RO_PendingTurns[itemID] or pItem:GetDuration();
+    RefreshTurnsText(RO_PendingTurns[itemID]);
+
+    local function AddTurnButton(labelKey, delta)
+        local inst = GetTurnIM():GetInstance();
+        inst.AgreementOptionIcon:SetHide(true);
+        inst.AgreementOptionLabel:SetText(Locale.Lookup(labelKey));
+        inst.AgreementOptionButton:SetToolTipString(Locale.Lookup("LOC_RO_SUPPLY_TURNS_TT"));
+        local function change(d)
+            local t = (RO_PendingTurns[itemID] or pItem:GetDuration()) + d;
+            if t < RO_SUPPLY_MIN_TURNS then t = RO_SUPPLY_MIN_TURNS end
+            if t > RO_SUPPLY_MAX_TURNS then t = RO_SUPPLY_MAX_TURNS end
+            RO_PendingTurns[itemID] = t;
+            RefreshTurnsText(t);
+            UI.PlaySound("Play_UI_Click");
+        end
+        inst.AgreementOptionButton:RegisterCallback(Mouse.eLClick, function() change(delta); end);
+        inst.AgreementOptionButton:RegisterCallback(Mouse.eRClick, function() change(delta); end);
+    end
+    AddTurnButton("LOC_RO_SUPPLY_TURNS_PLUS_1", 1);
+    AddTurnButton("LOC_RO_SUPPLY_TURNS_MINUS_1", -1);
+    AddTurnButton("LOC_RO_SUPPLY_TURNS_MORE", 5);
+    AddTurnButton("LOC_RO_SUPPLY_TURNS_LESS", -5);
+
+    Controls.ValueEditStack:CalculateSize();
+    if ResizeValueEditScrollPanel ~= nil then ResizeValueEditScrollPanel(); end
+    Controls.ValueEditPopup:DoAutoSize();
+end
+
+-- ---------------------------------------------------------------------------
+-- Подтверждение в окне "Сколько?": применяем и количество, и число ходов
+-- ---------------------------------------------------------------------------
+local RO_BaseOnValueEditButton = OnValueEditButton;
+
+function OnValueEditButton(itemID)
+    local pDeal = GetWorkingDeal();
+    local pItem = pDeal ~= nil and pDeal:FindItemByID(itemID) or nil;
+    if pItem == nil or pItem:GetType() ~= DealItemTypes.RESOURCES or pItem:GetDuration() == 0
+        or RO_PendingTurns[itemID] == nil then
+        GetTurnIM():ResetInstances();
+        return RO_BaseOnValueEditButton(itemID);
+    end
+
+    local newAmount = clip(tonumber(Controls.ValueAmountEditBox:GetText()) or pItem:GetAmount(), 1, pItem:GetMaxAmount());
+    local newTurns = RO_PendingTurns[itemID];
+    RO_PendingTurns[itemID] = nil;
+
+    if newAmount ~= pItem:GetAmount() or newTurns ~= pItem:GetDuration() then
+        local oldAmount, oldTurns = pItem:GetAmount(), pItem:GetDuration();
+        local valueType, fromID = pItem:GetValueType(), pItem:GetFromPlayerID();
+        if not pItem:IsLocked() then
+            DetachValueEdit(itemID);
+            pDeal:RemoveItemByID(itemID);
+            pItem = pDeal:AddItemOfType(DealItemTypes.RESOURCES, fromID);
+            pItem:SetValueType(valueType);
+            pItem:SetDuration(newTurns);
+        end
+        pItem:SetAmount(newAmount);
+        if not pItem:IsValid() then
+            Log("Движок отклонил поставку: " .. newAmount .. " в ход на " .. newTurns .. " ходов; возвращаю " .. oldAmount .. "/" .. oldTurns);
+            pItem:SetDuration(oldTurns);
+            pItem:SetAmount(oldAmount);
+            UI.PlaySound("Play_UI_Click_Error");
+        else
+            Log("Поставка изменена: " .. pItem:GetAmount() .. " в ход, " .. pItem:GetDuration() .. " ходов");
+        end
+        UpdateProposedWorkingDeal();
+    end
+
+    GetTurnIM():ResetInstances();
+    UpdateDealStatus();
+    UpdateDealPanel(g_LocalPlayer);
+    UpdateDealPanel(g_OtherPlayer);
+    Controls.ValueEditPopupBackground:SetHide(true);
+end
+
+Log("Resource supply deal extension loaded");

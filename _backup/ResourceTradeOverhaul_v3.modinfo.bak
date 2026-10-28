@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="d7e82b4a-5f91-4e12-88b9-1a3f62e84102" version="1">
+  <Properties>
+    <Name>Resource and Trade Overhaul (Переработка ресурсов и торговли)</Name>
+    <Description>All resources accumulate into national stockpiles. Tradable in diplomacy and required for buildings.</Description>
+    <Teaser>Resource accumulation and trade overhaul.</Teaser>
+    <Authors>Nikita</Authors>
+    <CompatibleVersions>2.0</CompatibleVersions>
+  </Properties>
+  <ActionCriteria>
+    <Criteria id="Expansion2">
+      <GameCoreInUse>Expansion2</GameCoreInUse>
+    </Criteria>
+  </ActionCriteria>
+  <InGameActions>
+    <UpdateDatabase id="ResourceChanges">
+      <Criteria>Expansion2</Criteria>
+      <File>Data/Resources.sql</File>
+      <File>Data/Buildings.sql</File>
+      <File>Data/Diplomacy.sql</File>
+      <File>Data/Eras.sql</File>
+      <File>Data/Units.sql</File>
+      <File>Data/Loyalty.sql</File>
+      <File>Data/Religion.sql</File>
+    </UpdateDatabase>
+    <UpdateText id="TextChanges">
+      <Criteria>Expansion2</Criteria>
+      <File>Text/Localization.sql</File>
+    </UpdateText>
+    <UpdateIcons id="IconChanges">
+      <Criteria>Expansion2</Criteria>
+      <File>Data/Icons.xml</File>
+    </UpdateIcons>
+    <AddGameplayScripts id="FoodScripts">
+      <Criteria>Expansion2</Criteria>
+      <File>Scripts/FoodConsolidation.lua</File>
+      <File>Scripts/ReligiousSubjugation.lua</File>
+    </AddGameplayScripts>
+    <ImportFiles id="TooltipImports">
+      <Criteria>Expansion2</Criteria>
+      <File>Scripts/ToolTipLoader_ResourceOverhaul.lua</File>
+    </ImportFiles>
+    <ReplaceUIScript id="TradeLimitActionView">
+      <Criteria>Expansion2</Criteria>
+      <Properties>
+        <LoadOrder>250</LoadOrder>
+        <LuaContext>DiplomacyActionView</LuaContext>
+        <LuaReplace>Scripts/DiplomacyActionView_TradeLimit.lua</LuaReplace>
+      </Properties>
+    </ReplaceUIScript>
+    <ReplaceUIScript id="QuotaProductionPanel">
+      <Criteria>Expansion2</Criteria>
+      <Properties>
+        <LoadOrder>300</LoadOrder>
+        <LuaContext>ProductionPanel</LuaContext>
+        <LuaReplace>Scripts/ProductionPanel_ResourceOverhaul.lua</LuaReplace>
+      </Properties>
+    </ReplaceUIScript>
+    <ReplaceUIScript id="AgitationUnitPanel">
+      <Criteria>Expansion2</Criteria>
+      <Properties>
+        <LoadOrder>300</LoadOrder>
+        <LuaContext>UnitPanel</LuaContext>
+        <LuaReplace>Scripts/UnitPanel_ResourceOverhaul.lua</LuaReplace>
+      </Properties>
+    </ReplaceUIScript>
+  </InGameActions>
+  <Files>
+    <File>Data/Resources.sql</File>
+    <File>Data/Buildings.sql</File>
+    <File>Data/Units.sql</File>
+    <File>Data/Diplomacy.sql</File>
+    <File>Data/Eras.sql</File>
+    <File>Data/Loyalty.sql</File>
+    <File>Data/Religion.sql</File>
+    <File>Data/Icons.xml</File>
+    <File>Text/Localization.sql</File>
+    <File>Scripts/FoodConsolidation.lua</File>
+    <File>Scripts/ToolTipLoader_ResourceOverhaul.lua</File>
+    <File>Scripts/DiplomacyActionView_TradeLimit.lua</File>
+    <File>Scripts/ReligiousSubjugation.lua</File>
+    <File>Scripts/UnitPanel_ResourceOverhaul.lua</File>
+    <File>Scripts/ProductionPanel_ResourceOverhaul.lua</File>
+  </Files>
+</Mod>

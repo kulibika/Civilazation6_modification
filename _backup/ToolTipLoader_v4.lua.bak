@@ -1,0 +1,170 @@
+-- ===========================================================================
+-- Resource Overhaul: подсказки с ценой по квоте
+-- C(r) = max(B(r), round(S_world(r) / 6))
+--
+-- ВАЖНО: игра подключает все файлы ToolTipLoader_* (include("ToolTipLoader_", true))
+-- в произвольном порядке. Если ToolTipLoader_Expansion2 грузится ПОСЛЕ нас,
+-- он перезаписывает AddUnitStrategicResourceTooltip / AddBuildingExtraCostTooltip.
+-- Поэтому мы НЕ подключаем его сами, а ставим свои функции "лениво":
+-- при загрузке, по LoadScreenClose и прямо перед каждым построением подсказки.
+-- ===========================================================================
+
+local UNIT_FOOD_RATION_UI = {
+    UNIT_SLINGER = 10, UNIT_ARCHER = 10, UNIT_SPEARMAN = 10, UNIT_HEAVY_CHARIOT = 10,
+    UNIT_HORSEMAN = 10, UNIT_SWORDSMAN = 10, UNIT_CATAPULT = 10, UNIT_GALLEY = 10, UNIT_QUADRIREME = 10,
+    UNIT_CROSSBOWMAN = 15, UNIT_PIKEMAN = 15, UNIT_MAN_AT_ARMS = 15, UNIT_KNIGHT = 15, UNIT_COURSER = 15,
+    UNIT_TREBUCHET = 15, UNIT_PIKE_AND_SHOT = 15, UNIT_MUSKETMAN = 15, UNIT_CUIRASSIER = 15,
+    UNIT_BOMBARD = 15, UNIT_CARAVEL = 15, UNIT_FRIGATE = 15,
+    UNIT_LINE_INFANTRY = 20, UNIT_FIELD_CANNON = 20, UNIT_CAVALRY = 20, UNIT_IRONCLAD = 20,
+    UNIT_INFANTRY = 20, UNIT_MACHINE_GUN = 20, UNIT_AT_CREW = 20, UNIT_ARTILLERY = 20, UNIT_TANK = 20,
+    UNIT_BATTLESHIP = 20, UNIT_SUBMARINE = 20, UNIT_MODERN_AT = 20, UNIT_FIGHTER = 20, UNIT_BOMBER = 20,
+    UNIT_JET_FIGHTER = 20, UNIT_JET_BOMBER = 20, UNIT_MODERN_ARMOR = 20, UNIT_NUCLEAR_SUBMARINE = 20,
+    UNIT_MISSILE_CRUISER = 20
+};
+
+local RO_BaseUnitTooltip = nil;
+local RO_BaseBuildingCostTooltip = nil;
+
+function GetGlobalStockUI(resIndex)
+    local total = 0;
+    for i = 0, 61 do
+        local pPlayer = Players[i];
+        if pPlayer ~= nil and pPlayer:IsAlive() then
+            local pRes = pPlayer:GetResources();
+            if pRes ~= nil then
+                total = total + pRes:GetResourceAmount(resIndex);
+            end
+        end
+    end
+    return total;
+end
+
+function GetQuotaCostUI(baseCost, resIndex)
+    local quotaCost = math.floor((GetGlobalStockUI(resIndex) / 6.0) + 0.5);
+    if quotaCost < baseCost then
+        return baseCost;
+    end
+    return quotaCost;
+end
+
+local function CostLine(amount, resDef)
+    local icon = "[ICON_" .. resDef.ResourceType .. "]";
+    return Locale.Lookup("LOC_UNIT_PRODUCTION_RESOURCE_COST", amount, icon, resDef.Name);
+end
+
+local function GetUnitBaseCost(unitType)
+    if GameInfo.Units_XP2 == nil then return 0 end
+    for row in GameInfo.Units_XP2() do
+        if row.UnitType == unitType and row.ResourceCost ~= nil and row.ResourceCost > 0 then
+            return row.ResourceCost;
+        end
+    end
+    return 0;
+end
+
+local function SettlerIsFree()
+    local pPlayer = Players[Game.GetLocalPlayer()];
+    if pPlayer == nil then return false end
+    local prevCount = pPlayer:GetProperty("MOD_SETTLER_COUNT");
+    if prevCount == nil then prevCount = pPlayer:GetCities():GetCount(); end
+    return (prevCount + 1) <= 2;
+end
+
+function RO_AddUnitStrategicResourceTooltip(unitReference, formationType, pBuildQueue, costLines)
+    if unitReference == nil then return "" end
+    local lines = {};
+
+    local resource = GameInfo.Resources[unitReference.StrategicResource];
+    local baseCost = GetUnitBaseCost(unitReference.UnitType);
+    if unitReference.UnitType == "UNIT_SETTLER" then
+        -- у поселенца нет цены в движке, её считает скрипт мода
+        resource = GameInfo.Resources["RESOURCE_FOOD"];
+        baseCost = 30;
+    end
+    if resource ~= nil and baseCost > 0 then
+        if unitReference.UnitType == "UNIT_SETTLER" and SettlerIsFree() then
+            table.insert(lines, CostLine(0, resource));
+        else
+            table.insert(lines, CostLine(GetQuotaCostUI(baseCost, resource.Index), resource));
+        end
+    elseif RO_BaseUnitTooltip ~= nil then
+        local s = RO_BaseUnitTooltip(unitReference, formationType, pBuildQueue, costLines);
+        if s ~= nil and s ~= "" then table.insert(lines, s); end
+    end
+
+    local ration = UNIT_FOOD_RATION_UI[unitReference.UnitType];
+    local foodRes = GameInfo.Resources["RESOURCE_FOOD"];
+    if ration ~= nil and foodRes ~= nil then
+        table.insert(lines, CostLine(GetQuotaCostUI(ration, foodRes.Index), foodRes));
+    end
+
+    return table.concat(lines, "[NEWLINE]");
+end
+
+function RO_AddBuildingExtraCostTooltip(buildingHash, tooltipLines)
+    local baseStr = "";
+    if RO_BaseBuildingCostTooltip ~= nil then
+        baseStr = RO_BaseBuildingCostTooltip(buildingHash, tooltipLines) or "";
+    end
+    local bRef = GameInfo.Buildings[buildingHash];
+    if bRef == nil or GameInfo.Building_ResourceCosts == nil then return baseStr end
+
+    local lines = {};
+    if baseStr ~= "" then table.insert(lines, baseStr); end
+    for row in GameInfo.Building_ResourceCosts() do
+        if row.BuildingType == bRef.BuildingType and row.StartProductionCost > 0 then
+            local resDef = GameInfo.Resources[row.ResourceType];
+            if resDef ~= nil then
+                table.insert(lines, CostLine(GetQuotaCostUI(row.StartProductionCost, resDef.Index), resDef));
+            end
+        end
+    end
+    return table.concat(lines, "[NEWLINE]");
+end
+
+-- Ставим свои функции поверх того, что сейчас лежит в глобалах (идемпотентно)
+function RO_InstallTooltipOverrides()
+    if AddUnitStrategicResourceTooltip ~= RO_AddUnitStrategicResourceTooltip then
+        RO_BaseUnitTooltip = AddUnitStrategicResourceTooltip;
+        AddUnitStrategicResourceTooltip = RO_AddUnitStrategicResourceTooltip;
+    end
+    if AddBuildingExtraCostTooltip ~= RO_AddBuildingExtraCostTooltip then
+        RO_BaseBuildingCostTooltip = AddBuildingExtraCostTooltip;
+        AddBuildingExtraCostTooltip = RO_AddBuildingExtraCostTooltip;
+    end
+end
+
+-- Обёртки над ToolTipHelper: перед построением подсказки переустанавливаем свои функции.
+local RO_BaseGetUnitToolTip = nil;
+local RO_BaseGetBuildingToolTip = nil;
+
+function RO_GetUnitToolTip(...)
+    RO_InstallTooltipOverrides();
+    return RO_BaseGetUnitToolTip(...);
+end
+
+function RO_GetBuildingToolTip(...)
+    RO_InstallTooltipOverrides();
+    return RO_BaseGetBuildingToolTip(...);
+end
+
+function RO_InstallAll()
+    RO_InstallTooltipOverrides();
+    if ToolTipHelper ~= nil then
+        -- Оборачиваем ровно один раз: Expansion2 может обернуть нашу обёртку сверху,
+        -- и повторная обёртка дала бы бесконечную рекурсию.
+        if RO_BaseGetUnitToolTip == nil and ToolTipHelper.GetUnitToolTip ~= nil then
+            RO_BaseGetUnitToolTip = ToolTipHelper.GetUnitToolTip;
+            ToolTipHelper.GetUnitToolTip = RO_GetUnitToolTip;
+        end
+        if RO_BaseGetBuildingToolTip == nil and ToolTipHelper.GetBuildingToolTip ~= nil then
+            RO_BaseGetBuildingToolTip = ToolTipHelper.GetBuildingToolTip;
+            ToolTipHelper.GetBuildingToolTip = RO_GetBuildingToolTip;
+        end
+    end
+end
+
+RO_InstallAll();
+if Events ~= nil and Events.LoadScreenClose ~= nil then
+    Events.LoadScreenClose.Add(RO_InstallAll);
+end

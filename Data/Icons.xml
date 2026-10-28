@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GameInfo>
+  <IconDefinitions>
+    <Row Name="ICON_RESOURCE_FOOD" Atlas="ICON_ATLAS_YIELDS" Index="0"/>
+    <Row Name="ICON_RESOURCE_FOOD_FOW" Atlas="ICON_ATLAS_YIELDS" Index="0"/>
+    <Row Name="ICON_RESOURCE_LUXURY_GOODS" Atlas="ICON_ATLAS_YIELDS" Index="4"/>
+    <Row Name="ICON_RESOURCE_LUXURY_GOODS_FOW" Atlas="ICON_ATLAS_YIELDS" Index="4"/>
+    <Row Name="RESOURCE_FOOD" Atlas="ICON_ATLAS_FONT_ICON_BASELINE_6" Index="51"/>
+    <Row Name="RESOURCE_LUXURY_GOODS" Atlas="ICON_ATLAS_FONT_ICON_BASELINE_6" Index="1"/>
+  </IconDefinitions>
+</GameInfo>

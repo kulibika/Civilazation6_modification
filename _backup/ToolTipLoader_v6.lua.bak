@@ -1,0 +1,233 @@
+-- ===========================================================================
+-- Resource Overhaul: подсказки с ценой по квоте
+-- C(r) = max(1, round(B(r) * (S_world(r) / N) / avg(r))), N = города цивилизаций / 2
+--
+-- ВАЖНО: игра подключает все файлы ToolTipLoader_* (include("ToolTipLoader_", true))
+-- в произвольном порядке. Если ToolTipLoader_Expansion2 грузится ПОСЛЕ нас,
+-- он перезаписывает AddUnitStrategicResourceTooltip / AddBuildingExtraCostTooltip.
+-- Поэтому мы НЕ подключаем его сами, а ставим свои функции "лениво":
+-- при загрузке, по LoadScreenClose и прямо перед каждым построением подсказки.
+-- ===========================================================================
+
+-- Дополнительные ресурсы рецептов (Data/Recipes.sql)
+local function GetExtrasUI(tableName, keyField, key)
+    local list = {};
+    local iter = GameInfo[tableName];
+    if iter == nil then return list end
+    for row in iter() do
+        if row[keyField] == key and row.BaseCost ~= nil and row.BaseCost > 0 then
+            local r = GameInfo.Resources[row.ResourceType];
+            if r ~= nil then table.insert(list, { res = r, base = row.BaseCost }); end
+        end
+    end
+    return list;
+end
+
+local RO_BaseUnitTooltip = nil;
+local RO_BaseBuildingCostTooltip = nil;
+
+function GetGlobalStockUI(resIndex)
+    local total = 0;
+    for i = 0, 61 do
+        local pPlayer = Players[i];
+        if pPlayer ~= nil and pPlayer:IsAlive() then
+            local pRes = pPlayer:GetResources();
+            if pRes ~= nil then
+                total = total + pRes:GetResourceAmount(resIndex);
+            end
+        end
+    end
+    return total;
+end
+
+-- ===========================================================================
+-- ФОРМУЛА КВОТЫ (одинаковая в игровом скрипте и в интерфейсе)
+--   N      = (число городов цивилизаций на карте) / 2   (города-государства не считаются), не меньше 1
+--   avg(r) = средняя базовая цена ресурса r по всем рецептам (юниты, здания, доп. ресурсы)
+--   C(r)   = max(1, round( B(r) * (S_world(r) / N) / avg(r) ))
+-- Из мирового запаса ресурса одновременно можно создать около N "средних" объектов.
+-- Цена может быть и выше, и ниже базовой: при нехватке ресурса в мире она падает.
+-- ===========================================================================
+local RO_AvgBaseCache = nil;
+
+local function RO_AddBase(acc, resType, base)
+    if resType == nil or base == nil or base <= 0 then return end
+    local r = GameInfo.Resources[resType];
+    if r == nil then return end
+    local e = acc[r.Index] or { sum = 0, n = 0 };
+    e.sum = e.sum + base; e.n = e.n + 1;
+    acc[r.Index] = e;
+end
+
+function RO_GetAvgBase(resIndex)
+    if RO_AvgBaseCache == nil then
+        local acc = {};
+        if GameInfo.Units_XP2 ~= nil then
+            for row in GameInfo.Units_XP2() do
+                if row.ResourceCost ~= nil and row.ResourceCost > 0 then
+                    local u = GameInfo.Units[row.UnitType];
+                    if u ~= nil and u.StrategicResource ~= nil then RO_AddBase(acc, u.StrategicResource, row.ResourceCost); end
+                end
+            end
+        end
+        if GameInfo.Building_ResourceCosts ~= nil then
+            for row in GameInfo.Building_ResourceCosts() do RO_AddBase(acc, row.ResourceType, row.StartProductionCost); end
+        end
+        if GameInfo.RO_UnitExtraCosts ~= nil then
+            for row in GameInfo.RO_UnitExtraCosts() do RO_AddBase(acc, row.ResourceType, row.BaseCost); end
+        end
+        if GameInfo.RO_BuildingExtraCosts ~= nil then
+            for row in GameInfo.RO_BuildingExtraCosts() do RO_AddBase(acc, row.ResourceType, row.BaseCost); end
+        end
+        RO_AvgBaseCache = {};
+        for idx, e in pairs(acc) do RO_AvgBaseCache[idx] = e.sum / e.n; end
+    end
+    return RO_AvgBaseCache[resIndex];
+end
+
+function RO_GetQuotaN()
+    local cities = 0;
+    local ids = {};
+    if PlayerManager.GetAliveMajorIDs ~= nil then
+        ids = PlayerManager.GetAliveMajorIDs();
+    elseif PlayerManager.GetAliveMajors ~= nil then
+        for _, p in ipairs(PlayerManager.GetAliveMajors()) do table.insert(ids, p:GetID()); end
+    end
+    for _, id in ipairs(ids) do
+        local p = Players[id];
+        if p ~= nil then cities = cities + p:GetCities():GetCount(); end
+    end
+    local n = cities / 2;
+    if n < 1 then n = 1 end
+    return n;
+end
+
+function RO_QuotaFormula(base, worldStock, resIndex)
+    local avg = RO_GetAvgBase(resIndex) or base;
+    if avg <= 0 then avg = base end
+    local c = math.floor(base * (worldStock / RO_GetQuotaN()) / avg + 0.5);
+    if c < 1 then c = 1 end
+    return c;
+end
+
+function GetQuotaCostUI(baseCost, resIndex)
+    return RO_QuotaFormula(baseCost, GetGlobalStockUI(resIndex), resIndex);
+end
+
+local function CostLine(amount, resDef)
+    local icon = "[ICON_" .. resDef.ResourceType .. "]";
+    return Locale.Lookup("LOC_UNIT_PRODUCTION_RESOURCE_COST", amount, icon, resDef.Name);
+end
+
+local function GetUnitBaseCost(unitType)
+    if GameInfo.Units_XP2 == nil then return 0 end
+    for row in GameInfo.Units_XP2() do
+        if row.UnitType == unitType and row.ResourceCost ~= nil and row.ResourceCost > 0 then
+            return row.ResourceCost;
+        end
+    end
+    return 0;
+end
+
+local function SettlerIsFree()
+    local pPlayer = Players[Game.GetLocalPlayer()];
+    if pPlayer == nil then return false end
+    local prevCount = pPlayer:GetProperty("MOD_SETTLER_COUNT");
+    if prevCount == nil then prevCount = pPlayer:GetCities():GetCount(); end
+    return (prevCount + 1) <= 2;
+end
+
+function RO_AddUnitStrategicResourceTooltip(unitReference, formationType, pBuildQueue, costLines)
+    if unitReference == nil then return "" end
+    local lines = {};
+    local isFreeSettler = (unitReference.UnitType == "UNIT_SETTLER") and SettlerIsFree();
+
+    -- Основной ресурс (Units_XP2), по квоте
+    local resource = GameInfo.Resources[unitReference.StrategicResource];
+    local baseCost = GetUnitBaseCost(unitReference.UnitType);
+    if resource ~= nil and baseCost > 0 then
+        table.insert(lines, CostLine(GetQuotaCostUI(baseCost, resource.Index), resource));
+    end
+
+    -- Дополнительные ресурсы рецепта, каждый по квоте
+    local extras = GetExtrasUI("RO_UnitExtraCosts", "UnitType", unitReference.UnitType);
+    for _, ing in ipairs(extras) do
+        table.insert(lines, CostLine(isFreeSettler and 0 or GetQuotaCostUI(ing.base, ing.res.Index), ing.res));
+    end
+
+    if #lines == 0 and RO_BaseUnitTooltip ~= nil then
+        local s = RO_BaseUnitTooltip(unitReference, formationType, pBuildQueue, costLines);
+        if s ~= nil and s ~= "" then table.insert(lines, s); end
+    end
+    return table.concat(lines, "[NEWLINE]");
+end
+function RO_AddBuildingExtraCostTooltip(buildingHash, tooltipLines)
+    local baseStr = "";
+    if RO_BaseBuildingCostTooltip ~= nil then
+        baseStr = RO_BaseBuildingCostTooltip(buildingHash, tooltipLines) or "";
+    end
+    local bRef = GameInfo.Buildings[buildingHash];
+    if bRef == nil or GameInfo.Building_ResourceCosts == nil then return baseStr end
+
+    local lines = {};
+    if baseStr ~= "" then table.insert(lines, baseStr); end
+    for row in GameInfo.Building_ResourceCosts() do
+        if row.BuildingType == bRef.BuildingType and row.StartProductionCost > 0 then
+            local resDef = GameInfo.Resources[row.ResourceType];
+            if resDef ~= nil then
+                table.insert(lines, CostLine(GetQuotaCostUI(row.StartProductionCost, resDef.Index), resDef));
+            end
+        end
+    end
+    for _, ing in ipairs(GetExtrasUI("RO_BuildingExtraCosts", "BuildingType", bRef.BuildingType)) do
+        table.insert(lines, CostLine(GetQuotaCostUI(ing.base, ing.res.Index), ing.res));
+    end
+    return table.concat(lines, "[NEWLINE]");
+end
+
+-- Ставим свои функции поверх того, что сейчас лежит в глобалах (идемпотентно)
+function RO_InstallTooltipOverrides()
+    if AddUnitStrategicResourceTooltip ~= RO_AddUnitStrategicResourceTooltip then
+        RO_BaseUnitTooltip = AddUnitStrategicResourceTooltip;
+        AddUnitStrategicResourceTooltip = RO_AddUnitStrategicResourceTooltip;
+    end
+    if AddBuildingExtraCostTooltip ~= RO_AddBuildingExtraCostTooltip then
+        RO_BaseBuildingCostTooltip = AddBuildingExtraCostTooltip;
+        AddBuildingExtraCostTooltip = RO_AddBuildingExtraCostTooltip;
+    end
+end
+
+-- Обёртки над ToolTipHelper: перед построением подсказки переустанавливаем свои функции.
+local RO_BaseGetUnitToolTip = nil;
+local RO_BaseGetBuildingToolTip = nil;
+
+function RO_GetUnitToolTip(...)
+    RO_InstallTooltipOverrides();
+    return RO_BaseGetUnitToolTip(...);
+end
+
+function RO_GetBuildingToolTip(...)
+    RO_InstallTooltipOverrides();
+    return RO_BaseGetBuildingToolTip(...);
+end
+
+function RO_InstallAll()
+    RO_InstallTooltipOverrides();
+    if ToolTipHelper ~= nil then
+        -- Оборачиваем ровно один раз: Expansion2 может обернуть нашу обёртку сверху,
+        -- и повторная обёртка дала бы бесконечную рекурсию.
+        if RO_BaseGetUnitToolTip == nil and ToolTipHelper.GetUnitToolTip ~= nil then
+            RO_BaseGetUnitToolTip = ToolTipHelper.GetUnitToolTip;
+            ToolTipHelper.GetUnitToolTip = RO_GetUnitToolTip;
+        end
+        if RO_BaseGetBuildingToolTip == nil and ToolTipHelper.GetBuildingToolTip ~= nil then
+            RO_BaseGetBuildingToolTip = ToolTipHelper.GetBuildingToolTip;
+            ToolTipHelper.GetBuildingToolTip = RO_GetBuildingToolTip;
+        end
+    end
+end
+
+RO_InstallAll();
+if Events ~= nil and Events.LoadScreenClose ~= nil then
+    Events.LoadScreenClose.Add(RO_InstallAll);
+end

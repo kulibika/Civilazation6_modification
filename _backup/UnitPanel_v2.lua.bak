@@ -1,0 +1,118 @@
+-- ===========================================================================
+-- Resource Overhaul: кнопка "Провести агитацию" для Апостола
+-- Расширяет панель юнита Gathering Storm (UnitPanel_Expansion2 -> Expansion1 -> UnitPanel).
+-- Правила дублируют Scripts/ReligiousSubjugation.lua (геймплей всё равно перепроверяет).
+-- ===========================================================================
+include("UnitPanel_Expansion2");
+
+local RO_AGIT = {
+    TURNS_REQUIRED      = 15,
+    AGITATIONS_REQUIRED = 5,
+    RANGE               = 1,
+    BASE_CHARGES        = 1,
+    CHARGES_POLICY_1    = 3,
+    CHARGES_POLICY_2    = 5,
+    UNIT_TYPE           = "UNIT_APOSTLE",
+    POLICY_1            = "POLICY_RO_PREACHERS",
+    POLICY_2            = "POLICY_RO_MISSION_ORDER",
+    EVENT_NAME          = "RO_AgitateCommand",
+    ICON                = "ICON_UNITOPERATION_EVANGELIZE_BELIEF"
+};
+
+local RO_BASE_GetUnitActionsTable = GetUnitActionsTable;
+
+local function RO_MaxCharges(iPlayer)
+    local pPlayer = Players[iPlayer];
+    if pPlayer == nil then return RO_AGIT.BASE_CHARGES end
+    local pCulture = pPlayer:GetCulture();
+    local p2 = GameInfo.Policies[RO_AGIT.POLICY_2];
+    local p1 = GameInfo.Policies[RO_AGIT.POLICY_1];
+    if pCulture ~= nil then
+        if p2 ~= nil and pCulture:IsPolicyActive(p2.Index) then return RO_AGIT.CHARGES_POLICY_2 end
+        if p1 ~= nil and pCulture:IsPolicyActive(p1.Index) then return RO_AGIT.CHARGES_POLICY_1 end
+    end
+    return RO_AGIT.BASE_CHARGES;
+end
+
+local function RO_FindTargetCity(pUnit)
+    local ux, uy, owner = pUnit:GetX(), pUnit:GetY(), pUnit:GetOwner();
+    local best = nil;
+    for iPlayer = 0, 62 do
+        local pPlayer = Players[iPlayer];
+        if iPlayer ~= owner and pPlayer ~= nil and pPlayer:IsAlive() then
+            for _, pCity in pPlayer:GetCities():Members() do
+                if Map.GetPlotDistance(ux, uy, pCity:GetX(), pCity:GetY()) <= RO_AGIT.RANGE then
+                    if pCity:GetX() == ux and pCity:GetY() == uy then return pCity end
+                    best = best or pCity;
+                end
+            end
+        end
+    end
+    return best;
+end
+
+-- возвращает: disabled, текст причины, город
+local function RO_CheckAgitate(pUnit)
+    local owner = pUnit:GetOwner();
+    local used = pUnit:GetProperty("RO_AGIT_USED") or 0;
+    local maxC = RO_MaxCharges(owner);
+    if used >= maxC then return true, Locale.Lookup("LOC_RO_SUBJ_DISABLED_NO_CHARGES"), nil end
+    if pUnit:GetMovesRemaining() <= 0 then return true, Locale.Lookup("LOC_RO_SUBJ_DISABLED_NO_MOVES"), nil end
+    local pCity = RO_FindTargetCity(pUnit);
+    if pCity == nil then return true, Locale.Lookup("LOC_RO_SUBJ_DISABLED_NO_CITY"), nil end
+    local pCityOwner = Players[pCity:GetOwner()];
+    if pCity:IsCapital() and pCityOwner ~= nil and pCityOwner:IsMajor() then
+        return true, Locale.Lookup("LOC_RO_SUBJ_DISABLED_CAPITAL"), pCity
+    end
+    local myRel = Players[owner]:GetReligion():GetReligionTypeCreated();
+    if myRel == nil or myRel < 0 then return true, Locale.Lookup("LOC_RO_SUBJ_DISABLED_NO_RELIGION"), pCity end
+    if pCity:GetReligion():GetMajorityReligion() ~= myRel then
+        return true, Locale.Lookup("LOC_RO_SUBJ_DISABLED_NOT_MAJORITY"), pCity
+    end
+    if (pCity:GetProperty("RO_SUBJ_REL") or -1) == myRel
+        and (pCity:GetProperty("RO_SUBJ_AGIT") or 0) >= RO_AGIT.AGITATIONS_REQUIRED then
+        return true, Locale.Lookup("LOC_RO_SUBJ_DISABLED_AGIT_FULL"), pCity
+    end
+    return false, "", pCity;
+end
+
+function GetUnitActionsTable(pUnit)
+    local actions = RO_BASE_GetUnitActionsTable(pUnit);
+    if pUnit == nil then return actions end
+    local uInfo = GameInfo.Units[pUnit:GetType()];
+    if uInfo == nil or uInfo.UnitType ~= RO_AGIT.UNIT_TYPE then return actions end
+    if pUnit:GetOwner() ~= Game.GetLocalPlayer() then return actions end
+
+    local disabled, reason, pCity = RO_CheckAgitate(pUnit);
+    local used = pUnit:GetProperty("RO_AGIT_USED") or 0;
+    local maxC = RO_MaxCharges(pUnit:GetOwner());
+
+    local tt = Locale.Lookup("LOC_RO_SUBJ_ACTION_NAME") .. "[NEWLINE][NEWLINE]"
+        .. Locale.Lookup("LOC_RO_SUBJ_ACTION_DESCRIPTION", RO_AGIT.TURNS_REQUIRED, RO_AGIT.AGITATIONS_REQUIRED)
+        .. "[NEWLINE][NEWLINE]" .. Locale.Lookup("LOC_RO_SUBJ_ACTION_CHARGES", maxC - used, maxC);
+
+    if pCity ~= nil then
+        local myRel = Players[pUnit:GetOwner()]:GetReligion():GetReligionTypeCreated();
+        local turns, agit = 0, 0;
+        if (pCity:GetProperty("RO_SUBJ_REL") or -1) == myRel and myRel >= 0 then
+            turns = pCity:GetProperty("RO_SUBJ_TURNS") or 0;
+            agit = pCity:GetProperty("RO_SUBJ_AGIT") or 0;
+        end
+        tt = tt .. "[NEWLINE]" .. Locale.Lookup("LOC_RO_SUBJ_ACTION_PROGRESS",
+            Locale.Lookup(pCity:GetName()), turns, RO_AGIT.TURNS_REQUIRED, agit, RO_AGIT.AGITATIONS_REQUIRED);
+    end
+    if disabled and reason ~= "" then
+        tt = tt .. "[NEWLINE][NEWLINE][COLOR:Red]" .. reason .. "[ENDCOLOR]";
+    end
+
+    local actionDef = { CategoryInUI = "SPECIFIC", Icon = RO_AGIT.ICON };
+    local callback = function()
+        local pSel = UI.GetHeadSelectedUnit();
+        if pSel == nil then return end
+        local params = {};
+        params[UnitCommandTypes.PARAM_NAME] = RO_AGIT.EVENT_NAME;
+        UnitManager.RequestCommand(pSel, UnitCommandTypes.EXECUTE_SCRIPT, params);
+    end
+    AddActionToTable(actions, actionDef, disabled, tt, UnitCommandTypes.EXECUTE_SCRIPT, callback);
+    return actions;
+end
